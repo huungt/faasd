@@ -7,29 +7,18 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/resource"
 
-	"github.com/containerd/containerd"
 	"github.com/openfaas/faas-provider/types"
 )
 
-func MakeReadHandler(client *containerd.Client) func(w http.ResponseWriter, r *http.Request) {
+func MakeReadHandler(client *http.Client, token string) func(w http.ResponseWriter, r *http.Request) {
 
 	return func(w http.ResponseWriter, r *http.Request) {
 
 		lookupNamespace := getRequestNamespace(readNamespaceFromQuery(r))
 		// Check if namespace exists, and it has the openfaas label
-		valid, err := validNamespace(client.NamespaceService(), lookupNamespace)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		if !valid {
-			http.Error(w, "namespace not valid", http.StatusBadRequest)
-			return
-		}
 
 		res := []types.FunctionStatus{}
-		fns, err := ListFunctions(client, lookupNamespace)
+		fns, err := ListFunctions(client, token, lookupNamespace)
 		if err != nil {
 			log.Printf("[Read] error listing functions. Error: %s", err)
 			http.Error(w, err.Error(), http.StatusBadRequest)

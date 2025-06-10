@@ -1,24 +1,18 @@
 package handlers
 
 import (
-	"context"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 
-	"github.com/containerd/containerd"
-	"github.com/containerd/containerd/namespaces"
-	gocni "github.com/containerd/go-cni"
-
 	"github.com/openfaas/faas-provider/types"
 	"github.com/openfaas/faasd/pkg"
-	cninetwork "github.com/openfaas/faasd/pkg/cninetwork"
-	"github.com/openfaas/faasd/pkg/service"
 )
 
-func MakeDeleteHandler(client *containerd.Client, cni gocni.CNI) func(w http.ResponseWriter, r *http.Request) {
+func MakeDeleteHandler(client *http.Client, token string) func(w http.ResponseWriter, r *http.Request) {
 
 	return func(w http.ResponseWriter, r *http.Request) {
 
@@ -45,21 +39,9 @@ func MakeDeleteHandler(client *containerd.Client, cni gocni.CNI) func(w http.Res
 			namespace = pkg.DefaultFunctionNamespace
 		}
 
-		// Check if namespace exists, and it has the openfaas label
-		valid, err := validNamespace(client.NamespaceService(), namespace)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		if !valid {
-			http.Error(w, "namespace not valid", http.StatusBadRequest)
-			return
-		}
-
 		name := req.FunctionName
 
-		function, err := GetFunction(client, name, namespace)
+		application, err := GetApplication(client, token, name, namespace)
 		if err != nil {
 			msg := fmt.Sprintf("function %s.%s not found", name, namespace)
 			log.Printf("[Delete] %s\n", msg)
@@ -67,19 +49,21 @@ func MakeDeleteHandler(client *containerd.Client, cni gocni.CNI) func(w http.Res
 			return
 		}
 
-		ctx := namespaces.WithNamespace(context.Background(), namespace)
+		apiUrl := fmt.Sprintf("http://192.168.0.164:10000/api/application/%s", application.ApplicationID)
+		emptyBody := []byte(`{}`)
+		request, err := http.NewRequest("DELETE", apiUrl, bytes.NewBuffer(emptyBody))
+		request.Header.Set("accept", "application/json")
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Authorization", "Bearer "+token)
 
-		// TODO: this needs to still happen if the task is paused
-		if function.replicas != 0 {
-			err = cninetwork.DeleteCNINetwork(ctx, cni, client, name)
-			if err != nil {
-				log.Printf("[Delete] error removing CNI network for %s, %s\n", name, err)
-			}
+		response, err := client.Do(request)
+		if err != nil {
+			return
 		}
+		defer response.Body.Close()
 
-		if err := service.Remove(ctx, client, name); err != nil {
-			log.Printf("[Delete] error removing %s, %s\n", name, err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		if response.StatusCode != http.StatusOK {
+			log.Printf("[Delete] error removing function %s: %s\n", name, err)
 			return
 		}
 

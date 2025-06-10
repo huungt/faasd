@@ -10,13 +10,12 @@ import (
 
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/namespaces"
-	gocni "github.com/containerd/go-cni"
 
 	"github.com/openfaas/faas-provider/types"
 	"github.com/openfaas/faasd/pkg"
 )
 
-func MakeReplicaUpdateHandler(client *containerd.Client, cni gocni.CNI) func(w http.ResponseWriter, r *http.Request) {
+func MakeReplicaUpdateHandler(client *http.Client, token string) func(w http.ResponseWriter, r *http.Request) {
 
 	return func(w http.ResponseWriter, r *http.Request) {
 
@@ -41,22 +40,9 @@ func MakeReplicaUpdateHandler(client *containerd.Client, cni gocni.CNI) func(w h
 		if namespace == "" {
 			namespace = pkg.DefaultFunctionNamespace
 		}
-
-		// Check if namespace exists, and it has the openfaas label
-		valid, err := validNamespace(client.NamespaceService(), namespace)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		if !valid {
-			http.Error(w, "namespace not valid", http.StatusBadRequest)
-			return
-		}
-
 		name := req.ServiceName
 
-		if _, err := GetFunction(client, name, namespace); err != nil {
+		if _, err := GetFunction(client, token, name, namespace); err != nil {
 			msg := fmt.Sprintf("function: %s.%s not found", name, namespace)
 			log.Printf("[Scale] %s\n", msg)
 			http.Error(w, msg, http.StatusNotFound)

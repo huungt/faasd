@@ -3,21 +3,22 @@ package handlers
 import (
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"strings"
 
-	"github.com/containerd/containerd"
 	faasd "github.com/openfaas/faasd/pkg"
 )
 
 const watchdogPort = 8080
 
 type InvokeResolver struct {
-	client *containerd.Client
+	client *http.Client
+	token  string
 }
 
-func NewInvokeResolver(client *containerd.Client) *InvokeResolver {
-	return &InvokeResolver{client: client}
+func NewInvokeResolver(client *http.Client, token string) *InvokeResolver {
+	return &InvokeResolver{client: client, token: token}
 }
 
 func (i *InvokeResolver) Resolve(functionName string) (url.URL, error) {
@@ -30,7 +31,7 @@ func (i *InvokeResolver) Resolve(functionName string) (url.URL, error) {
 		actualFunctionName = strings.TrimSuffix(functionName, "."+namespace)
 	}
 
-	function, err := GetFunction(i.client, actualFunctionName, namespace)
+	function, err := GetFunction(i.client, i.token, actualFunctionName, namespace)
 	if err != nil {
 		return url.URL{}, fmt.Errorf("%s not found", actualFunctionName)
 	}

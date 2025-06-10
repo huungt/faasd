@@ -1,23 +1,17 @@
 package handlers
 
 import (
-	"context"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 
-	"github.com/containerd/containerd"
-	"github.com/containerd/containerd/namespaces"
-	gocni "github.com/containerd/go-cni"
 	"github.com/openfaas/faas-provider/types"
-
-	"github.com/openfaas/faasd/pkg/cninetwork"
-	"github.com/openfaas/faasd/pkg/service"
 )
 
-func MakeUpdateHandler(client *containerd.Client, cni gocni.CNI, secretMountPath string, alwaysPull bool) func(w http.ResponseWriter, r *http.Request) {
+func MakeUpdateHandler(client *http.Client, token string) func(w http.ResponseWriter, r *http.Request) {
 
 	return func(w http.ResponseWriter, r *http.Request) {
 
@@ -42,27 +36,7 @@ func MakeUpdateHandler(client *containerd.Client, cni gocni.CNI, secretMountPath
 		name := req.Service
 		namespace := getRequestNamespace(req.Namespace)
 
-		// Check if namespace exists, and it has the openfaas label
-		valid, err := validNamespace(client.NamespaceService(), namespace)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		if !valid {
-			http.Error(w, "namespace not valid", http.StatusBadRequest)
-			return
-		}
-
-		if err := preDeploy(client, int64(0)); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			log.Printf("[Deploy] error deploying %s, error: %s\n", name, err)
-			return
-		}
-
-		namespaceSecretMountPath := getNamespaceSecretMountPath(secretMountPath, namespace)
-
-		function, err := GetFunction(client, name, namespace)
+		_, err = GetFunction(client, token, name, namespace)
 		if err != nil {
 			msg := fmt.Sprintf("function: %s.%s not found", name, namespace)
 			log.Printf("[Update] %s\n", msg)
@@ -70,38 +44,44 @@ func MakeUpdateHandler(client *containerd.Client, cni gocni.CNI, secretMountPath
 			return
 		}
 
-		err = validateSecrets(namespaceSecretMountPath, req.Secrets)
+		deploymentDescriptor := buildDeploymentDescriptor(req)
+
+		err = update(client, token, deploymentDescriptor)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-		}
-
-		ctx := namespaces.WithNamespace(context.Background(), namespace)
-
-		if _, err := prepull(ctx, req, client, alwaysPull); err != nil {
-			log.Printf("[Update] error with pre-pull: %s, %s\n", name, err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		}
-
-		if function.replicas != 0 {
-			err = cninetwork.DeleteCNINetwork(ctx, cni, client, name)
-			if err != nil {
-				log.Printf("[Update] error removing CNI network for %s, %s\n", name, err)
-			}
-		}
-
-		if err := service.Remove(ctx, client, name); err != nil {
-			log.Printf("[Update] error removing %s, %s\n", name, err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// The pull has already been done in prepull, so we can force this pull to "false"
-		pull := false
-
-		if err := deploy(ctx, req, client, cni, namespaceSecretMountPath, pull); err != nil {
-			log.Printf("[Update] error deploying %s, error: %s\n", name, err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
+			log.Printf("[Update] - error deploy descriptor: %s", err)
 		}
 	}
+}
+
+func update(client *http.Client, token string, descriptor SlaDeploymentDescriptor) error {
+	data, err := json.Marshal(descriptor)
+	if err != nil {
+		return err
+	}
+
+	request, err := http.NewRequest("PUT", "http://192.168.0.164:10000/api/application/", bytes.NewReader(data))
+	request.Header.Set("accept", "application/json")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+token)
+
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return err
+	}
+
+	body, _ := io.ReadAll(response.Body)
+
+	application := Application{}
+	err = json.Unmarshal(body, &application)
+	if err != nil {
+		return err
+	}
+
+	err = deployService(client, token, application)
+	return nil
 }

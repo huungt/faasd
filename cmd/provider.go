@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -8,13 +10,11 @@ import (
 	"os"
 	"path"
 
-	"github.com/containerd/containerd"
 	bootstrap "github.com/openfaas/faas-provider"
 	"github.com/openfaas/faas-provider/logs"
 	"github.com/openfaas/faas-provider/proxy"
 	"github.com/openfaas/faas-provider/types"
 	faasd "github.com/openfaas/faasd/pkg"
-	"github.com/openfaas/faasd/pkg/cninetwork"
 	faasdlogs "github.com/openfaas/faasd/pkg/logs"
 	"github.com/openfaas/faasd/pkg/provider/config"
 	"github.com/openfaas/faasd/pkg/provider/handlers"
@@ -22,6 +22,17 @@ import (
 )
 
 const secretDirPermission = 0755
+
+type LoginData struct {
+	Username     string `json:"username"`
+	Password     string `json:"password"`
+	Organization string `json:"organization"`
+}
+
+type Token struct {
+	Refresh_token string `json:"refresh_token"`
+	Token         string `json:"token"`
+}
 
 func makeProviderCmd() *cobra.Command {
 	var command = &cobra.Command{
@@ -61,19 +72,20 @@ nameserver 8.8.4.4`), workingDirectoryPermission); err != nil {
 		return fmt.Errorf("cannot write resolv.conf file: %s", err)
 	}
 
-	cni, err := cninetwork.InitNetwork()
+	// 	cni, err := cninetwork.InitNetwork()
+	// 	if err != nil {
+	// 		return err
+	// 	}
+
+	client := &http.Client{}
+
+	// token wird für Authentifizierung benötigt
+	token, err := getToken(client, providerConfig)
 	if err != nil {
-		return err
+		return fmt.Errorf("cannot get token: %s", err)
 	}
 
-	client, err := containerd.New(providerConfig.Sock)
-	if err != nil {
-		return err
-	}
-
-	defer client.Close()
-
-	invokeResolver := handlers.NewInvokeResolver(client)
+	invokeResolver := handlers.NewInvokeResolver(client, token)
 
 	baseUserSecretsPath := path.Join(wd, "secrets")
 	if err := moveSecretsToDefaultNamespaceSecrets(
@@ -82,21 +94,20 @@ nameserver 8.8.4.4`), workingDirectoryPermission); err != nil {
 		return err
 	}
 
-	alwaysPull := true
 	bootstrapHandlers := types.FaaSHandlers{
-		FunctionProxy:   httpHeaderMiddleware(proxy.NewHandlerFunc(*config, invokeResolver, false)),
-		DeleteFunction:  httpHeaderMiddleware(handlers.MakeDeleteHandler(client, cni)),
-		DeployFunction:  httpHeaderMiddleware(handlers.MakeDeployHandler(client, cni, baseUserSecretsPath, alwaysPull)),
-		FunctionLister:  httpHeaderMiddleware(handlers.MakeReadHandler(client)),
-		FunctionStatus:  httpHeaderMiddleware(handlers.MakeReplicaReaderHandler(client)),
-		ScaleFunction:   httpHeaderMiddleware(handlers.MakeReplicaUpdateHandler(client, cni)),
-		UpdateFunction:  httpHeaderMiddleware(handlers.MakeUpdateHandler(client, cni, baseUserSecretsPath, alwaysPull)),
-		Health:          httpHeaderMiddleware(func(w http.ResponseWriter, r *http.Request) {}),
-		Info:            httpHeaderMiddleware(handlers.MakeInfoHandler(faasd.Version, faasd.GitCommit)),
-		ListNamespaces:  httpHeaderMiddleware(handlers.MakeNamespacesLister(client)),
-		Secrets:         httpHeaderMiddleware(handlers.MakeSecretHandler(client.NamespaceService(), baseUserSecretsPath)),
-		Logs:            httpHeaderMiddleware(logs.NewLogHandlerFunc(faasdlogs.New(), config.ReadTimeout)),
-		MutateNamespace: httpHeaderMiddleware(handlers.MakeMutateNamespace(client)),
+		FunctionProxy:  httpHeaderMiddleware(proxy.NewHandlerFunc(*config, invokeResolver, false)),
+		DeleteFunction: httpHeaderMiddleware(handlers.MakeDeleteHandler(client, token)),
+		DeployFunction: httpHeaderMiddleware(handlers.MakeDeployHandler(client, token)),
+		FunctionLister: httpHeaderMiddleware(handlers.MakeReadHandler(client, token)),
+		FunctionStatus: httpHeaderMiddleware(handlers.MakeReplicaReaderHandler(client, token)),
+		//ScaleFunction:   httpHeaderMiddleware(handlers.MakeReplicaUpdateHandler(client, token)),
+		UpdateFunction: httpHeaderMiddleware(handlers.MakeUpdateHandler(client, token)),
+		Health:         httpHeaderMiddleware(func(w http.ResponseWriter, r *http.Request) {}),
+		Info:           httpHeaderMiddleware(handlers.MakeInfoHandler(faasd.Version, faasd.GitCommit)),
+		//ListNamespaces:  httpHeaderMiddleware(handlers.MakeNamespacesLister(client)),
+		//Secrets:         httpHeaderMiddleware(handlers.MakeSecretHandler(client.NamespaceService(), baseUserSecretsPath)),
+		Logs: httpHeaderMiddleware(logs.NewLogHandlerFunc(faasdlogs.New(), config.ReadTimeout)),
+		//MutateNamespace: httpHeaderMiddleware(handlers.MakeMutateNamespace(client)),
 	}
 
 	log.Printf("Listening on: 0.0.0.0:%d", *config.TCPPort)
@@ -169,4 +180,38 @@ func httpHeaderMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		w.Header().Set("X-OpenFaaS-EULA", "openfaas-ce")
 		next.ServeHTTP(w, r)
 	}
+}
+
+func getToken(client *http.Client, providerConfig *config.ProviderConfig) (string, error) {
+	loginData := LoginData{
+		Username:     providerConfig.OakestraUser,
+		Password:     providerConfig.OakestraPassword,
+		Organization: providerConfig.OakestraOrganization,
+	}
+
+	data, err := json.Marshal(loginData)
+	if err != nil {
+		return "", err
+	}
+
+	request, err := http.NewRequest("POST", providerConfig.OakestraAPI+"/auth/login", bytes.NewBuffer(data))
+	if err != nil {
+		return "", err
+	}
+
+	response, err := client.Do(request)
+	if err != nil {
+		return "", err
+	}
+
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+
+	token := Token{}
+	err = json.Unmarshal(body, &token)
+	if err != nil {
+		return "", err
+	}
+
+	return token.Token, err
 }

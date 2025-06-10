@@ -1,14 +1,9 @@
 package handlers
 
 import (
-	"context"
-	"errors"
-	"log"
-	"strings"
-	"time"
+	"net/http"
 
-	"github.com/containerd/containerd"
-	"github.com/containerd/containerd/namespaces"
+	"time"
 )
 
 type Function struct {
@@ -28,38 +23,21 @@ type Function struct {
 }
 
 // ListFunctions returns a map of all functions with running tasks on namespace
-func ListFunctions(client *containerd.Client, namespace string) (map[string]*Function, error) {
-
-	// Check if namespace exists, and it has the openfaas label
-	valid, err := validNamespace(client.NamespaceService(), namespace)
-	if err != nil {
-		return nil, err
-	}
-
-	if !valid {
-		return nil, errors.New("namespace not valid")
-	}
-
-	ctx := namespaces.WithNamespace(context.Background(), namespace)
+func ListFunctions(client *http.Client, token string, namespace string) (map[string]*Function, error) {
 	functions := make(map[string]*Function)
 
-	containers, err := client.Containers(ctx)
+	services, err := GetMicroservices(client, token)
 	if err != nil {
 		return functions, err
 	}
-
-	for _, c := range containers {
-		name := c.ID()
-		f, err := GetFunction(client, name, namespace)
-		if err != nil {
-			if !strings.Contains(err.Error(), "unable to get IP address for container") {
-				log.Printf("List functions, skipping: %s, error: %s", name, err)
+	for _, service := range services {
+		if service.MicroserviceNamespace == namespace {
+			function, err := GetFunction(client, token, service.MicroserviceName, service.MicroserviceNamespace)
+			if err != nil {
+				return functions, err
 			}
-
-		} else {
-			functions[name] = &f
+			functions[service.MicroserviceName] = &function
 		}
 	}
-
 	return functions, nil
 }

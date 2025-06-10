@@ -8,7 +8,10 @@ import (
 
 type ProviderConfig struct {
 	// Sock is the address of the containerd socket
-	Sock string
+	OakestraAPI          string
+	OakestraUser         string
+	OakestraPassword     string
+	OakestraOrganization string
 }
 
 // ReadFromEnv loads the FaaSConfig and the Containerd specific config form the env variables
@@ -22,7 +25,7 @@ func ReadFromEnv(hasEnv types.HasEnv) (*types.FaaSConfig, *ProviderConfig, error
 
 	config.ReadTimeout = serviceTimeout
 	config.WriteTimeout = serviceTimeout
-	config.EnableBasicAuth = true
+	config.EnableBasicAuth = false
 	config.MaxIdleConns = types.ParseIntValue(hasEnv.Getenv("max_idle_conns"), 1024)
 	config.MaxIdleConnsPerHost = types.ParseIntValue(hasEnv.Getenv("max_idle_conns_per_host"), 1024)
 
@@ -30,7 +33,10 @@ func ReadFromEnv(hasEnv types.HasEnv) (*types.FaaSConfig, *ProviderConfig, error
 	config.TCPPort = &port
 
 	providerConfig := &ProviderConfig{
-		Sock: types.ParseString(hasEnv.Getenv("sock"), "/run/containerd/containerd.sock"),
+		OakestraAPI:          types.ParseString(hasEnv.Getenv("oakestra_api"), "http://192.168.0.164:10000/api"),
+		OakestraUser:         types.ParseString(hasEnv.Getenv("oakestra_user"), "Admin"),
+		OakestraPassword:     types.ParseString(hasEnv.Getenv("oakestra_password"), "Admin"),
+		OakestraOrganization: types.ParseString(hasEnv.Getenv("oakestra_organization"), "string"),
 	}
 
 	return config, providerConfig, nil
